@@ -1,112 +1,107 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 
-// Inline SVG Icons for self-contained, 404-free rendering
-const SVG_ICONS = {
-  ec2: (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FF9900" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-      <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-      <line x1="6" y1="6" x2="6.01" y2="6"></line>
-      <line x1="6" y1="18" x2="6.01" y2="18"></line>
-    </svg>
-  ),
-  igw: (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8C4FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10"></circle>
-      <line x1="2" y1="12" x2="22" y2="12"></line>
-      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-    </svg>
-  ),
-  default: (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#232F3E" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="4" y="4" width="16" height="16" rx="2"></rect>
-      <circle cx="9" cy="9" r="2"></circle>
-      <path d="M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path>
-    </svg>
-  )
+// High-resolution AWS Official SVGs via Reliable CDN
+const AWS_ICONS = {
+  vpc: 'https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/GroupIcons/VPC.png',
+  subnet_public: 'https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/GroupIcons/PublicSubnet.png',
+  subnet_private: 'https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/GroupIcons/PrivateSubnet.png',
+  ec2: 'https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/Compute/EC2.png',
+  igw: 'https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/NetworkingContentDelivery/InternetGateway.png',
+  nat: 'https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/NetworkingContentDelivery/NATGateway.png'
 };
 
-const STATE_COLORS = {
-  running: '#1d8102',
-  stopped: '#d13212',
-  pending: '#eb5f07',
-  terminated: '#545b64'
+const statusColors = {
+  healthy: '#10b981',
+  running: '#10b981',
+  degraded: '#f59e0b',
+  error: '#ef4444',
+  stopped: '#ef4444'
 };
 
-export const AwsResourceNode = ({ data }) => {
-  const resourceType = data?.resourceType?.toLowerCase() || 'ec2';
-  const icon = SVG_ICONS[resourceType] || SVG_ICONS.default;
-  const stateColor = STATE_COLORS[data?.state?.toLowerCase()] || '#232f3e';
+// 1. AWS Resource Node (EC2, IGW, NAT)
+export const AwsResourceNode = memo(({ data }) => {
+  const service = data?.service?.toLowerCase() || 'ec2';
+  const iconUrl = data?.icon || AWS_ICONS[service] || AWS_ICONS.ec2;
+  const statusColor = statusColors[data?.status?.toLowerCase()] || statusColors[data?.state?.toLowerCase()] || '#10b981';
 
   return (
     <div style={{
       padding: '10px 14px',
       borderRadius: '8px',
-      background: '#ffffff',
-      border: '1px solid #d5dbdb',
+      background: '#1e293b',
+      border: `2px solid ${statusColor}`,
+      color: '#f8fafc',
       display: 'flex',
       alignItems: 'center',
       gap: '12px',
-      boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
-      minWidth: '200px'
+      minWidth: '220px',
+      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.4)',
+      boxSizing: 'border-box'
     }}>
-      <Handle type="target" position={Position.Top} />
-      <div>{icon}</div>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: '600', fontSize: '13px', color: '#232f3e' }}>
+      <Handle type="target" position={Position.Left} style={{ background: statusColor }} />
+      
+      <img src={iconUrl} alt={service} style={{ width: '32px', height: '32px', objectFit: 'contain' }} />
+
+      <div style={{ flexGrow: 1, overflow: 'hidden' }}>
+        <div style={{ fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#f8fafc' }}>
           {data.label}
         </div>
-        {data.subtext && (
-          <div style={{ fontSize: '11px', color: '#687078', marginTop: '2px' }}>
-            {data.subtext}
-          </div>
-        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+          <span style={{ fontSize: '10px', color: statusColor, fontWeight: 'bold' }}>
+            ● {data.status || data.state || 'ACTIVE'}
+          </span>
+          <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+            {data.metric || ''}
+          </span>
+        </div>
       </div>
-      {data.state && (
-        <span style={{
-          width: '10px',
-          height: '10px',
-          borderRadius: '50%',
-          backgroundColor: stateColor,
-          display: 'inline-block'
-        }} title={`State: ${data.state}`} />
-      )}
-      <Handle type="source" position={Position.Bottom} />
+
+      <Handle type="source" position={Position.Right} style={{ background: statusColor }} />
     </div>
   );
-};
+});
 
-export const VpcContainerNode = ({ data }) => (
+// 2. VPC Container Node
+export const VpcContainerNode = memo(({ data }) => (
   <div style={{
-    padding: '16px',
-    border: '2px dashed #879596',
-    borderRadius: '8px',
-    backgroundColor: 'rgba(135, 149, 150, 0.04)',
-    width: '100%',
-    height: '100%',
-    boxSizing: 'border-box'
+    padding: '12px 16px',
+    color: '#ff9900',
+    fontWeight: 'bold',
+    fontSize: '14px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    background: 'rgba(15, 23, 42, 0.65)',
+    borderTopLeftRadius: '10px',
+    borderTopRightRadius: '10px'
   }}>
-    <Handle type="target" position={Position.Top} />
-    <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#879596', marginBottom: '8px' }}>
-      VPC: {data.label} {data.cidr ? `(${data.cidr})` : ''}
-    </div>
-    <Handle type="source" position={Position.Bottom} />
+    <img src={AWS_ICONS.vpc} alt="VPC" style={{ width: '28px', height: '28px' }} />
+    <span>{data.label}</span>
   </div>
-);
+));
 
-export const SubnetContainerNode = ({ data }) => (
-  <div style={{
-    padding: '14px',
-    border: `2px dashed ${data.isPublic ? '#007dbc' : '#116600'}`,
-    borderRadius: '6px',
-    backgroundColor: data.isPublic ? 'rgba(0, 125, 188, 0.04)' : 'rgba(17, 102, 0, 0.04)',
-    width: '100%',
-    height: '100%',
-    boxSizing: 'border-box'
-  }}>
-    <div style={{ fontWeight: 'bold', fontSize: '12px', color: data.isPublic ? '#007dbc' : '#116600', marginBottom: '6px' }}>
-      Subnet: {data.label} {data.cidr ? `(${data.cidr})` : ''}
+// 3. Subnet Container Node
+export const SubnetContainerNode = memo(({ data }) => {
+  const isPublic = data.isPublic;
+  const color = isPublic ? '#00a4e4' : '#00c7b7';
+  const icon = isPublic ? AWS_ICONS.subnet_public : AWS_ICONS.subnet_private;
+
+  return (
+    <div style={{
+      padding: '10px 14px',
+      color: color,
+      fontWeight: 'bold',
+      fontSize: '12px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      background: 'rgba(30, 41, 59, 0.7)',
+      borderTopLeftRadius: '6px',
+      borderTopRightRadius: '6px'
+    }}>
+      <img src={icon} alt="Subnet" style={{ width: '22px', height: '22px' }} />
+      <span>{data.label}</span>
     </div>
-  </div>
-);
+  );
+});

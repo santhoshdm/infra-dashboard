@@ -7,7 +7,7 @@ const statusConfig = {
   error: { color: '#ef4444', badge: 'STOPPED' }
 };
 
-// Standard AWS Resource Node (EC2, NAT, IGW, RouteTable)
+// Standard Resource Node (EC2, IGW, NAT, Route Table)
 export const AwsResourceNode = memo(({ data }) => {
   const cfg = statusConfig[data.status] || { color: '#6b7280', badge: 'UNKNOWN' };
 
@@ -26,8 +26,7 @@ export const AwsResourceNode = memo(({ data }) => {
     }}>
       <Handle type="target" position={Position.Left} style={{ background: cfg.color }} />
       
-      {/* Renders Official AWS PlantUML Icon */}
-      {data.icon && <img src={data.icon} alt={data.service} style={{ width: '32px', height: '32px' }} />}
+      {data.icon && <img src={data.icon} alt={data.service} style={{ width: '30px', height: '30px' }} />}
       
       <div style={{ flexGrow: 1, overflow: 'hidden' }}>
         <div style={{ fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -48,18 +47,18 @@ export const AwsResourceNode = memo(({ data }) => {
   );
 });
 
-// Outer VPC Container Node
+// Outer VPC Group Container
 export const VpcContainerNode = memo(({ data }) => (
   <div style={{ padding: '12px', color: '#ff9900', fontWeight: 'bold', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-    <img src={data.icon} alt="VPC" style={{ width: '26px', height: '26px' }} />
+    <img src={data.icon} alt="VPC" style={{ width: '24px', height: '24px' }} />
     {data.label}
   </div>
 ));
 
-// Subnet Container Node
+// Subnet Group Container
 export const SubnetContainerNode = memo(({ data }) => (
   <div style={{ padding: '10px', color: '#00a4e4', fontWeight: 'bold', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-    <img src={data.icon} alt="Subnet" style={{ width: '22px', height: '22px' }} />
+    <img src={data.icon} alt="Subnet" style={{ width: '20px', height: '20px' }} />
     {data.label}
   </div>
 ));

@@ -1,10 +1,15 @@
 import os
-import boto3
-from typing import Optional
-from fastapi import FastAPI, Query
+import logging
+from typing import Optional, List, Dict, Any
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
-app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("aws-topology")
+
+app = FastAPI(title="AWS Topology API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,7 +21,6 @@ app.add_middleware(
 
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", os.getenv("AWS_REGION", "ap-south-1"))
 
-# Reliable official AWS Architecture Icons (SVG)
 AWS_ICONS = {
     "vpc": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/Groups/VPC.png",
     "subnet_public": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/Groups/PublicSubnet.png",
@@ -25,66 +29,78 @@ AWS_ICONS = {
     "igw": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/NetworkingContent/VPCInternetGateway.png"
 }
 
-def matches_env(tags_list, target_env: Optional[str]):
-    if not target_env or target_env.lower() == "all":
+def matches_env(tags_list: Optional[List[Dict[str, str]]], target_env: Optional[str]) -> bool:
+    """Evaluates if a resource directly matches the requested environment tag."""
+    if not target_env or target_env.lower() in ["all", ""]:
         return True
-    tags = {t['Key'].lower(): t['Value'].lower() for t in tags_list or []}
-    return tags.get('Environment') == target_env.lower() or tags.get('env') == target_env.lower()
+    
+    tags = {t.get("Key", "").lower(): t.get("Value", "").lower() for t in (tags_list or [])}
+    env_val = tags.get("environment") or tags.get("env")
+    return env_val == target_env.lower()
 
 @app.get("/api/topology")
 def get_topology(env: Optional[str] = Query(None)):
-    ec2 = boto3.client('ec2', region_name=AWS_REGION)
-
     try:
-        raw_vpcs = ec2.describe_vpcs().get('Vpcs', [])
-        raw_subnets = ec2.describe_subnets().get('Subnets', [])
-        raw_igws = ec2.describe_internet_gateways().get('InternetGateways', [])
-        
-        reservations = ec2.describe_instances().get('Reservations', [])
-        raw_instances = [inst for r in reservations for inst in r.get('Instances', [])]
+        ec2 = boto3.client("ec2", region_name=AWS_REGION)
 
-        # Filter Instances by Tag
-        filtered_instances = [i for i in raw_instances if matches_env(i.get('Tags', []), env)]
-
-        # Get relevant Subnet IDs and VPC IDs
-        active_subnet_ids = {i.get('SubnetId') for i in filtered_instances if i.get('SubnetId')}
+        # 1. Fetch ALL raw resources independently from AWS
+        raw_vpcs = ec2.describe_vpcs().get("Vpcs", [])
+        raw_subnets = ec2.describe_subnets().get("Subnets", [])
+        raw_igws = ec2.describe_internet_gateways().get("InternetGateways", [])
         
-        # Filter Subnets (match env tag OR contain tagged instances)
-        filtered_subnets = [
+        reservations = ec2.describe_instances().get("Reservations", [])
+        raw_instances = [inst for r in reservations for inst in r.get("Instances", [])]
+
+        # 2. INDEPENDENT TAG FILTERING
+        # Each resource category is filtered purely by its own tags
+        directly_matched_vpcs = [v for v in raw_vpcs if matches_env(v.get("Tags"), env)]
+        directly_matched_subnets = [s for s in raw_subnets if matches_env(s.get("Tags"), env)]
+        directly_matched_igws = [i for i in raw_igws if matches_env(i.get("Tags"), env)]
+        directly_matched_instances = [inst for inst in raw_instances if matches_env(inst.get("Tags"), env)]
+
+        # 3. CONSTRUCT WORKING SET (Ensure valid hierarchy display)
+        # Include subnets if directly matched OR if their parent VPC matched
+        matched_vpc_ids = {v["VpcId"] for v in directly_matched_vpcs}
+        
+        final_subnets = [
             s for s in raw_subnets 
-            if matches_env(s.get('Tags', []), env) or s['SubnetId'] in active_subnet_ids
-        ]
-        
-        active_vpc_ids = {s['VpcId'] for s in filtered_subnets}
-
-        # Filter VPCs
-        filtered_vpcs = [
-            v for v in raw_vpcs 
-            if matches_env(v.get('Tags', []), env) or v['VpcId'] in active_vpc_ids
+            if s["SubnetId"] in {sub["SubnetId"] for sub in directly_matched_subnets} or s["VpcId"] in matched_vpc_ids
         ]
 
-        # Group subnets & instances
-        vpc_to_subnets = {}
-        for sub in filtered_subnets:
-            vpc_to_subnets.setdefault(sub['VpcId'], []).append(sub)
+        # Ensure parent VPCs exist for any matched subnets/IGWs
+        required_vpc_ids = matched_vpc_ids.union({s["VpcId"] for s in final_subnets})
+        for igw in directly_matched_igws:
+            for att in igw.get("Attachments", []):
+                if att.get("VpcId"):
+                    required_vpc_ids.add(att["VpcId"])
 
-        subnet_to_instances = {}
-        for inst in filtered_instances:
-            if inst.get('SubnetId'):
-                subnet_to_instances.setdefault(inst['SubnetId'], []).append(inst)
+        final_vpcs = [v for v in raw_vpcs if v["VpcId"] in required_vpc_ids]
+
+        # Group subnets & instances by parent IDs
+        vpc_to_subnets: Dict[str, List[Dict[str, Any]]] = {}
+        for sub in final_subnets:
+            vpc_to_subnets.setdefault(sub["VpcId"], []).append(sub)
+
+        subnet_to_instances: Dict[str, List[Dict[str, Any]]] = {}
+        for inst in directly_matched_instances:
+            sub_id = inst.get("SubnetId")
+            if sub_id:
+                subnet_to_instances.setdefault(sub_id, []).append(inst)
 
         nodes = []
         edges = []
         vpc_x_offset = 50
 
-        for vpc in filtered_vpcs:
-            vpc_id = vpc['VpcId']
-            vpc_name = next((t['Value'] for t in vpc.get('Tags', []) if t['Key'] == 'Name'), vpc_id)
+        # 4. BUILD CANVAS TOPOLOGY
+        for vpc in final_vpcs:
+            vpc_id = vpc["VpcId"]
+            vpc_name = next((t["Value"] for t in vpc.get("Tags", []) if t["Key"] == "Name"), vpc_id)
             subnets_in_vpc = vpc_to_subnets.get(vpc_id, [])
 
             subnet_count = max(len(subnets_in_vpc), 1)
             vpc_width = (subnet_count * 420) + 60
 
+            # Render VPC Container Node
             nodes.append({
                 "id": vpc_id,
                 "type": "vpcContainer",
@@ -104,10 +120,11 @@ def get_topology(env: Optional[str] = Query(None)):
 
             subnet_x = 30
             for sub in subnets_in_vpc:
-                sub_id = sub['SubnetId']
-                sub_name = next((t['Value'] for t in sub.get('Tags', []) if t['Key'] == 'Name'), sub_id)
-                is_public = sub.get('MapPublicIpOnLaunch', False)
+                sub_id = sub["SubnetId"]
+                sub_name = next((t["Value"] for t in sub.get("Tags", []) if t["Key"] == "Name"), sub_id)
+                is_public = sub.get("MapPublicIpOnLaunch", False)
 
+                # Render Subnet Container Node
                 nodes.append({
                     "id": sub_id,
                     "type": "subnetContainer",
@@ -128,12 +145,12 @@ def get_topology(env: Optional[str] = Query(None)):
                     }
                 })
 
-                # Instances inside subnet
+                # Render EC2 Instances inside Subnet (if any match the filter)
                 inst_y = 60
                 for inst in subnet_to_instances.get(sub_id, []):
-                    inst_id = inst['InstanceId']
-                    state = inst['State']['Name']
-                    name = next((t['Value'] for t in inst.get('Tags', []) if t['Key'] == 'Name'), inst_id)
+                    inst_id = inst["InstanceId"]
+                    state = inst.get("State", {}).get("Name", "unknown")
+                    name = next((t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"), inst_id)
 
                     nodes.append({
                         "id": inst_id,
@@ -153,12 +170,12 @@ def get_topology(env: Optional[str] = Query(None)):
 
                 subnet_x += 420
 
-            # Attach IGW
+            # Render IGWs attached to this VPC (if IGW matches filter)
             igw_x = 30
-            for igw in raw_igws:
-                for attachment in igw.get('Attachments', []):
-                    if attachment.get('VpcId') == vpc_id:
-                        igw_id = igw['InternetGatewayId']
+            for igw in directly_matched_igws:
+                for attachment in igw.get("Attachments", []):
+                    if attachment.get("VpcId") == vpc_id:
+                        igw_id = igw["InternetGatewayId"]
                         nodes.append({
                             "id": igw_id,
                             "type": "awsNode",
@@ -179,5 +196,9 @@ def get_topology(env: Optional[str] = Query(None)):
 
         return {"nodes": nodes, "edges": edges}
 
+    except (BotoCoreError, ClientError) as e:
+        logger.error(f"AWS API Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
-        return {"error": str(e), "nodes": [], "edges": []}
+        logger.error(f"Unexpected Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

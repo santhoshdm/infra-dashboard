@@ -3,6 +3,8 @@ version: '3.8'
 services:
   backend:
     build: ./backend
+    environment:
+      - AWS_DEFAULT_REGION=ap-south-1
     ports:
       - "8000:8000"
     restart: always

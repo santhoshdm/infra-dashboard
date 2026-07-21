@@ -1,7 +1,7 @@
 import os
 import boto3
-from datetime import datetime
-from fastapi import FastAPI
+from typing import Optional
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -14,19 +14,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-AWS_REGION = os.getenv("AWS_DEFAULT_REGION", os.getenv("AWS_REGION", "us-east-1"))
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", os.getenv("AWS_REGION", "ap-south-1"))
 
+# Reliable official AWS Architecture Icons (SVG)
 AWS_ICONS = {
-    "vpc": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/GroupIcons/VPC.png",
-    "subnet_public": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/GroupIcons/PublicSubnet.png",
-    "subnet_private": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/GroupIcons/PrivateSubnet.png",
+    "vpc": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/Groups/VPC.png",
+    "subnet_public": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/Groups/PublicSubnet.png",
+    "subnet_private": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/Groups/PrivateSubnet.png",
     "ec2": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/Compute/EC2.png",
-    "igw": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/NetworkingContentDelivery/InternetGateway.png",
-    "nat": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/NetworkingContentDelivery/NATGateway.png"
+    "igw": "https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v18.0/dist/NetworkingContent/VPCInternetGateway.png"
 }
 
+def matches_env(tags_list, target_env: Optional[str]):
+    if not target_env or target_env.lower() == "all":
+        return True
+    tags = {t['Key'].lower(): t['Value'].lower() for t in tags_list or []}
+    return tags.get('Environment') == target_env.lower() or tags.get('env') == target_env.lower()
+
 @app.get("/api/topology")
-def get_topology():
+def get_topology(env: Optional[str] = Query(None)):
     ec2 = boto3.client('ec2', region_name=AWS_REGION)
 
     try:
@@ -37,13 +43,33 @@ def get_topology():
         reservations = ec2.describe_instances().get('Reservations', [])
         raw_instances = [inst for r in reservations for inst in r.get('Instances', [])]
 
+        # Filter Instances by Tag
+        filtered_instances = [i for i in raw_instances if matches_env(i.get('Tags', []), env)]
+
+        # Get relevant Subnet IDs and VPC IDs
+        active_subnet_ids = {i.get('SubnetId') for i in filtered_instances if i.get('SubnetId')}
+        
+        # Filter Subnets (match env tag OR contain tagged instances)
+        filtered_subnets = [
+            s for s in raw_subnets 
+            if matches_env(s.get('Tags', []), env) or s['SubnetId'] in active_subnet_ids
+        ]
+        
+        active_vpc_ids = {s['VpcId'] for s in filtered_subnets}
+
+        # Filter VPCs
+        filtered_vpcs = [
+            v for v in raw_vpcs 
+            if matches_env(v.get('Tags', []), env) or v['VpcId'] in active_vpc_ids
+        ]
+
         # Group subnets & instances
         vpc_to_subnets = {}
-        for sub in raw_subnets:
+        for sub in filtered_subnets:
             vpc_to_subnets.setdefault(sub['VpcId'], []).append(sub)
 
         subnet_to_instances = {}
-        for inst in raw_instances:
+        for inst in filtered_instances:
             if inst.get('SubnetId'):
                 subnet_to_instances.setdefault(inst['SubnetId'], []).append(inst)
 
@@ -51,13 +77,11 @@ def get_topology():
         edges = []
         vpc_x_offset = 50
 
-        for vpc in raw_vpcs:
+        for vpc in filtered_vpcs:
             vpc_id = vpc['VpcId']
             vpc_name = next((t['Value'] for t in vpc.get('Tags', []) if t['Key'] == 'Name'), vpc_id)
             subnets_in_vpc = vpc_to_subnets.get(vpc_id, [])
 
-            # DYNAMIC SIZING CALCULATIONS:
-            # Subnet width = 380, spacing = 40. 
             subnet_count = max(len(subnets_in_vpc), 1)
             vpc_width = (subnet_count * 420) + 60
 
@@ -91,7 +115,8 @@ def get_topology():
                     "extent": "parent",
                     "data": {
                         "label": f"{'Public' if is_public else 'Private'} Subnet: {sub_name}",
-                        "isPublic": is_public
+                        "isPublic": is_public,
+                        "icon": AWS_ICONS["subnet_public"] if is_public else AWS_ICONS["subnet_private"]
                     },
                     "position": {"x": subnet_x, "y": 70},
                     "style": {
@@ -128,7 +153,7 @@ def get_topology():
 
                 subnet_x += 420
 
-            # Attach IGW to bottom of VPC
+            # Attach IGW
             igw_x = 30
             for igw in raw_igws:
                 for attachment in igw.get('Attachments', []):
@@ -152,7 +177,7 @@ def get_topology():
 
             vpc_x_offset += vpc_width + 80
 
-        return {"nodes": nodes, "edges": edges, "timestamp": datetime.utcnow().isoformat()}
+        return {"nodes": nodes, "edges": edges}
 
     except Exception as e:
         return {"error": str(e), "nodes": [], "edges": []}

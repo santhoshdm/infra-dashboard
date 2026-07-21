@@ -14,40 +14,43 @@ function App() {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [environment, setEnvironment] = useState('all');
   const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Poll API for topology updates silently in background
-  const fetchTopology = useCallback(async (isInitial = false) => {
+  const fetchTopology = useCallback(async (selectedEnv, isInitial = false) => {
     try {
-      const response = await fetch('/api/topology');
+      const url = selectedEnv && selectedEnv !== 'all' 
+        ? `/api/topology?env=${selectedEnv}` 
+        : '/api/topology';
+
+      const response = await fetch(url);
       if (!response.ok) throw new Error('API fetch failed');
       const data = await response.json();
 
-      if (data.nodes) setNodes(data.nodes);
-      if (data.edges) setEdges(data.edges);
+      setNodes(data.nodes || []);
+      setEdges(data.edges || []);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
-      console.error("Failed to poll topology:", err);
+      console.error("Failed to fetch topology:", err);
     } finally {
       if (isInitial) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchTopology(true);
+    fetchTopology(environment, true);
 
-    // Live refresh every 10 seconds (preserves session without app restart)
     const interval = setInterval(() => {
-      fetchTopology(false);
+      fetchTopology(environment, false);
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [fetchTopology]);
+  }, [environment, fetchTopology]);
 
   if (loading) {
     return (
       <div style={{ width: '100vw', height: '100vh', background: '#0f172a', color: '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>
-        <h2>Fetching AWS Infrastructure Topology...</h2>
+        <h2>Loading AWS Topology Dashboard...</h2>
       </div>
     );
   }
@@ -55,24 +58,56 @@ function App() {
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#0b0f19', position: 'relative' }}>
       
-      {/* Live Polling Status Indicator */}
+      {/* Top Header Control Bar */}
       <div style={{
         position: 'absolute',
         top: 15,
+        left: 20,
         right: 20,
         zIndex: 10,
-        background: '#1e293b',
-        padding: '8px 14px',
-        borderRadius: '20px',
-        border: '1px solid #334155',
-        color: '#94a3b8',
-        fontSize: '12px',
         display: 'flex',
+        justify: 'space-between',
         alignItems: 'center',
-        gap: '8px'
+        pointerEvents: 'none'
       }}>
-        <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981', display: 'inline-block' }}></span>
-        Live Polling Active {lastUpdated && `(Updated ${lastUpdated})`}
+        {/* Environment Selector Dropdown */}
+        <div style={{ pointerEvents: 'auto', background: '#1e293b', padding: '8px 16px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label style={{ color: '#94a3b8', fontSize: '13px', fontWeight: 'bold' }}>Environment Tag:</label>
+          <select 
+            value={environment} 
+            onChange={(e) => setEnvironment(e.target.value)}
+            style={{
+              background: '#0f172a',
+              color: '#f8fafc',
+              border: '1px solid #475569',
+              padding: '6px 12px',
+              borderRadius: '6px',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="all">All Environments</option>
+            <option value="dev">dev</option>
+            <option value="prod">prod</option>
+            <option value="staging">staging</option>
+          </select>
+        </div>
+
+        {/* Live Status Indicator */}
+        <div style={{
+          background: '#1e293b',
+          padding: '8px 14px',
+          borderRadius: '20px',
+          border: '1px solid #334155',
+          color: '#94a3b8',
+          fontSize: '12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px'
+        }}>
+          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981', display: 'inline-block' }}></span>
+          Polling Active {lastUpdated && `(Updated ${lastUpdated})`}
+        </div>
       </div>
 
       <ReactFlow
@@ -80,11 +115,9 @@ function App() {
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
-        minZoom={0.2}
-        maxZoom={1.5}
       >
         <Background color="#1e293b" gap={20} />
-        <Controls style={{ button: { background: '#1e293b', color: '#fff', border: '1px solid #334155' } }} />
+        <Controls />
       </ReactFlow>
     </div>
   );

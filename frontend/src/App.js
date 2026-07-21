@@ -88,7 +88,7 @@ function App() {
           >
             <option value="all">All Environments</option>
             <option value="dev">dev</option>
-            <option value="prod">prod</option>
+            <option value="Production">Production</option>
             <option value="staging">staging</option>
           </select>
         </div>

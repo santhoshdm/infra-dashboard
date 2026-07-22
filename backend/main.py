@@ -43,60 +43,43 @@ def get_topology(env: Optional[str] = Query(None)):
     try:
         ec2 = boto3.client("ec2", region_name=AWS_REGION)
 
-        # 1. Fetch ALL raw resources independently from AWS
+        # -------------------------------------------------------------------
+        # STEP 1 & 2: FETCH & FILTER ALL RESOURCES INDEPENDENTLY
+        # -------------------------------------------------------------------
         raw_vpcs = ec2.describe_vpcs().get("Vpcs", [])
         raw_subnets = ec2.describe_subnets().get("Subnets", [])
         raw_igws = ec2.describe_internet_gateways().get("InternetGateways", [])
-        
         reservations = ec2.describe_instances().get("Reservations", [])
         raw_instances = [inst for r in reservations for inst in r.get("Instances", [])]
 
-        # 2. INDEPENDENT TAG FILTERING
-        # Each resource category is filtered purely by its own tags
-        directly_matched_vpcs = [v for v in raw_vpcs if matches_env(v.get("Tags"), env)]
-        directly_matched_subnets = [s for s in raw_subnets if matches_env(s.get("Tags"), env)]
-        directly_matched_igws = [i for i in raw_igws if matches_env(i.get("Tags"), env)]
-        directly_matched_instances = [inst for inst in raw_instances if matches_env(inst.get("Tags"), env)]
+        # Pure tag filtering (zero inter-resource dependency)
+        matched_vpcs = [v for v in raw_vpcs if matches_env(v.get("Tags"), env)]
+        matched_subnets = [s for s in raw_subnets if matches_env(s.get("Tags"), env)]
+        matched_igws = [i for i in raw_igws if matches_env(i.get("Tags"), env)]
+        matched_instances = [inst for inst in raw_instances if matches_env(inst.get("Tags"), env)]
 
-        # 3. CONSTRUCT WORKING SET (Ensure valid hierarchy display)
-        # Include subnets if directly matched OR if their parent VPC matched
-        matched_vpc_ids = {v["VpcId"] for v in directly_matched_vpcs}
-        
-        final_subnets = [
-            s for s in raw_subnets 
-            if s["SubnetId"] in {sub["SubnetId"] for sub in directly_matched_subnets} or s["VpcId"] in matched_vpc_ids
-        ]
-
-        # Ensure parent VPCs exist for any matched subnets/IGWs
-        required_vpc_ids = matched_vpc_ids.union({s["VpcId"] for s in final_subnets})
-        for igw in directly_matched_igws:
-            for att in igw.get("Attachments", []):
-                if att.get("VpcId"):
-                    required_vpc_ids.add(att["VpcId"])
-
-        final_vpcs = [v for v in raw_vpcs if v["VpcId"] in required_vpc_ids]
-
-        # Group subnets & instances by parent IDs
-        vpc_to_subnets: Dict[str, List[Dict[str, Any]]] = {}
-        for sub in final_subnets:
-            vpc_to_subnets.setdefault(sub["VpcId"], []).append(sub)
-
-        subnet_to_instances: Dict[str, List[Dict[str, Any]]] = {}
-        for inst in directly_matched_instances:
-            sub_id = inst.get("SubnetId")
-            if sub_id:
-                subnet_to_instances.setdefault(sub_id, []).append(inst)
+        matched_vpc_ids = {v["VpcId"] for v in matched_vpcs}
+        matched_subnet_ids = {s["SubnetId"] for s in matched_subnets}
 
         nodes = []
         edges = []
+        
+        # Track which resources get attached into containers
+        attached_subnets = set()
+        attached_instances = set()
+        attached_igws = set()
+
+        # -------------------------------------------------------------------
+        # STEP 3: RENDER VPC CONTAINERS & ATTACH QUALIFYING CHILDREN
+        # -------------------------------------------------------------------
         vpc_x_offset = 50
 
-        # 4. BUILD CANVAS TOPOLOGY
-        for vpc in final_vpcs:
+        for vpc in matched_vpcs:
             vpc_id = vpc["VpcId"]
             vpc_name = next((t["Value"] for t in vpc.get("Tags", []) if t["Key"] == "Name"), vpc_id)
-            subnets_in_vpc = vpc_to_subnets.get(vpc_id, [])
-
+            
+            # Subnets that belong to this VPC AND matched the tag
+            subnets_in_vpc = [s for s in matched_subnets if s.get("VpcId") == vpc_id]
             subnet_count = max(len(subnets_in_vpc), 1)
             vpc_width = (subnet_count * 420) + 60
 
@@ -121,6 +104,7 @@ def get_topology(env: Optional[str] = Query(None)):
             subnet_x = 30
             for sub in subnets_in_vpc:
                 sub_id = sub["SubnetId"]
+                attached_subnets.add(sub_id)
                 sub_name = next((t["Value"] for t in sub.get("Tags", []) if t["Key"] == "Name"), sub_id)
                 is_public = sub.get("MapPublicIpOnLaunch", False)
 
@@ -145,37 +129,40 @@ def get_topology(env: Optional[str] = Query(None)):
                     }
                 })
 
-                # Render EC2 Instances inside Subnet (if any match the filter)
+                # Attach EC2 instances to this Subnet IF instance matches tag
                 inst_y = 60
-                for inst in subnet_to_instances.get(sub_id, []):
-                    inst_id = inst["InstanceId"]
-                    state = inst.get("State", {}).get("Name", "unknown")
-                    name = next((t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"), inst_id)
+                for inst in matched_instances:
+                    if inst.get("SubnetId") == sub_id:
+                        inst_id = inst["InstanceId"]
+                        attached_instances.add(inst_id)
+                        state = inst.get("State", {}).get("Name", "unknown")
+                        name = next((t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"), inst_id)
 
-                    nodes.append({
-                        "id": inst_id,
-                        "type": "awsNode",
-                        "parentNode": sub_id,
-                        "extent": "parent",
-                        "data": {
-                            "label": name,
-                            "service": "ec2",
-                            "status": state,
-                            "metric": inst.get("InstanceType", ""),
-                            "icon": AWS_ICONS["ec2"]
-                        },
-                        "position": {"x": 20, "y": inst_y}
-                    })
-                    inst_y += 90
+                        nodes.append({
+                            "id": inst_id,
+                            "type": "awsNode",
+                            "parentNode": sub_id,
+                            "extent": "parent",
+                            "data": {
+                                "label": name,
+                                "service": "ec2",
+                                "status": state,
+                                "metric": inst.get("InstanceType", ""),
+                                "icon": AWS_ICONS["ec2"]
+                            },
+                            "position": {"x": 20, "y": inst_y}
+                        })
+                        inst_y += 90
 
                 subnet_x += 420
 
-            # Render IGWs attached to this VPC (if IGW matches filter)
+            # Attach IGWs to this VPC IF IGW matches tag and has attachment
             igw_x = 30
-            for igw in directly_matched_igws:
+            for igw in matched_igws:
                 for attachment in igw.get("Attachments", []):
                     if attachment.get("VpcId") == vpc_id:
                         igw_id = igw["InternetGatewayId"]
+                        attached_igws.add(igw_id)
                         nodes.append({
                             "id": igw_id,
                             "type": "awsNode",
@@ -193,6 +180,71 @@ def get_topology(env: Optional[str] = Query(None)):
                         igw_x += 240
 
             vpc_x_offset += vpc_width + 80
+
+        # -------------------------------------------------------------------
+        # STEP 4: RENDER ALL STANDALONE / UNATTACHED MATCHED RESOURCES
+        # -------------------------------------------------------------------
+        # Position standalone nodes off to the right of the VPC containers
+        standalone_x = vpc_x_offset if matched_vpcs else 50
+        standalone_y = 50
+
+        # 1. Unattached / Standalone IGWs
+        for igw in matched_igws:
+            if igw["InternetGatewayId"] not in attached_igws:
+                igw_id = igw["InternetGatewayId"]
+                state_str = "Attached (Other VPC)" if igw.get("Attachments") else "Detached"
+                nodes.append({
+                    "id": igw_id,
+                    "type": "awsNode",
+                    "data": {
+                        "label": f"IGW: {igw_id}",
+                        "service": "igw",
+                        "status": "degraded" if state_str == "Detached" else "healthy",
+                        "metric": state_str,
+                        "icon": AWS_ICONS["igw"]
+                    },
+                    "position": {"x": standalone_x, "y": standalone_y}
+                })
+                standalone_y += 100
+
+        # 2. Standalone Subnets (Subnet matched tag, but its VPC did not)
+        for sub in matched_subnets:
+            if sub["SubnetId"] not in attached_subnets:
+                sub_id = sub["SubnetId"]
+                sub_name = next((t["Value"] for t in sub.get("Tags", []) if t["Key"] == "Name"), sub_id)
+                nodes.append({
+                    "id": sub_id,
+                    "type": "awsNode",
+                    "data": {
+                        "label": f"Subnet: {sub_name}",
+                        "service": "subnet",
+                        "status": "healthy",
+                        "metric": f"VPC: {sub.get('VpcId')}",
+                        "icon": AWS_ICONS["subnet_public"]
+                    },
+                    "position": {"x": standalone_x, "y": standalone_y}
+                })
+                standalone_y += 100
+
+        # 3. Standalone EC2 Instances (Instance matched tag, but its Subnet did not)
+        for inst in matched_instances:
+            if inst["InstanceId"] not in attached_instances:
+                inst_id = inst["InstanceId"]
+                state = inst.get("State", {}).get("Name", "unknown")
+                name = next((t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"), inst_id)
+                nodes.append({
+                    "id": inst_id,
+                    "type": "awsNode",
+                    "data": {
+                        "label": f"{name} (Orphaned)",
+                        "service": "ec2",
+                        "status": state,
+                        "metric": inst.get("InstanceType", ""),
+                        "icon": AWS_ICONS["ec2"]
+                    },
+                    "position": {"x": standalone_x, "y": standalone_y}
+                })
+                standalone_y += 100
 
         return {"nodes": nodes, "edges": edges}
 
